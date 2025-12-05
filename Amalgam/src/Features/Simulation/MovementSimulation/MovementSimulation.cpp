@@ -200,13 +200,14 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, MoveStorage& tStorage
 		double dbAverageYaw = 0.0;
 		double dbTotalTime = 0.0;
 
+		float flYaw1 = Math::VectorAngles(vRecords[0].m_vDirection).y;
 		for (size_t i = 0; i < iSamples; i++)
 		{
 			if (vRecords.size() <= i + 2)
 				break;
 
 			const auto& pRecord1 = vRecords[i], &pRecord2 = vRecords[i + 1];
-			const float flYaw1 = Math::VectorAngles(pRecord1.m_vDirection).y, flYaw2 = Math::VectorAngles(pRecord2.m_vDirection).y;
+			const float flYaw2 = Math::VectorAngles(pRecord2.m_vDirection).y;
 			const float flTime1 = pRecord1.m_flSimTime, flTime2 = pRecord2.m_flSimTime;
 			const int iTicks = std::max(TIME_TO_TICKS(flTime1 - flTime2), 1);
 
@@ -228,11 +229,14 @@ bool CMovementSimulation::Initialize(CBaseEntity* pEntity, MoveStorage& tStorage
 				dbAverageYaw = 0.0;
 				dbTotalTime = 0.0;
 			}
+
+			flYaw1 = flYaw2;
 		}
 
 		if (flCurrentChance < Vars::Aimbot::Projectile::HitChance.Value / 100)
 		{
-			SDK::Output("MovementSimulation", std::format("Hitchance ({}% < {}%)", flCurrentChance * 100, Vars::Aimbot::Projectile::HitChance.Value).c_str(), { 80, 200, 120 }, Vars::Debug::Logging.Value);
+			if (Vars::Debug::Logging.Value)
+				SDK::Output("MovementSimulation", std::format("Hitchance ({}% < {}%)", flCurrentChance * 100, Vars::Aimbot::Projectile::HitChance.Value).c_str(), { 80, 200, 120 }, true);
 
 			tStorage.m_bFailed = true;
 			return false;
@@ -365,9 +369,8 @@ struct StrafeDataState
 	bool bStaticZero = false;
 };
 
-static inline bool GetYawDifference(MoveData& tRecord1, MoveData& tRecord2, StrafeDataState& state, bool bStart, float* pYaw, float flStraightFuzzyValue, int iMaxChanges = 0, int iMaxChangeTime = 0, float flMaxSpeed = 0.f)
+static inline bool GetYawDifference(MoveData& tRecord1, MoveData& tRecord2, StrafeDataState& state, bool bStart, float* pYaw, float flYaw1, float flYaw2, float flStraightFuzzyValue, int iMaxChanges = 0, int iMaxChangeTime = 0, float flMaxSpeed = 0.f)
 {
-	const float flYaw1 = Math::VectorAngles(tRecord1.m_vDirection).y, flYaw2 = Math::VectorAngles(tRecord2.m_vDirection).y;
 	const float flTime1 = tRecord1.m_flSimTime, flTime2 = tRecord2.m_flSimTime;
 	const int iTicks = std::max(TIME_TO_TICKS(flTime1 - flTime2), 1);
 
@@ -423,7 +426,8 @@ void CMovementSimulation::GetAverageYaw(MoveStorage& tStorage, int iSamples)
 
 	iSamples = std::min(iSamples, int(vRecords.size()));
 	size_t i = 1; int iSkips = 0;
-	
+
+	float flYaw1 = Math::VectorAngles(vRecords[0].m_vDirection).y;
 	for (; i < iSamples; i++)
 	{
 		auto& tRecord1 = vRecords[i - 1];
@@ -431,8 +435,11 @@ void CMovementSimulation::GetAverageYaw(MoveStorage& tStorage, int iSamples)
 		if (tRecord1.m_iMode != tRecord2.m_iMode)
 		{
 			iSkips++;
+			flYaw1 = Math::VectorAngles(tRecord2.m_vDirection).y; // Reset yaw1 for next iteration
 			continue;
 		}
+
+		float flYaw2 = Math::VectorAngles(tRecord2.m_vDirection).y;
 
 		bGround = tRecord1.m_iMode != 1;
 		float flStraightFuzzyValue = bGround ? Vars::Aimbot::Projectile::GroundStraightFuzzyValue.Value : Vars::Aimbot::Projectile::AirStraightFuzzyValue.Value;
@@ -444,8 +451,12 @@ void CMovementSimulation::GetAverageYaw(MoveStorage& tStorage, int iSamples)
 #endif
 
 		float flYaw = 0.f;
-		bool bResult = GetYawDifference(tRecord1, tRecord2, state, state.iStart == 0, &flYaw, flStraightFuzzyValue, iMaxChanges, iMaxChangeTime, flMaxSpeed);
-		SDK::Output("GetYawDifference", std::format("{} ({}): {}, {}", i, state.iStart, flYaw, bResult).c_str(), { 50, 127, 75 }, Vars::Debug::Logging.Value);
+		bool bResult = GetYawDifference(tRecord1, tRecord2, state, state.iStart == 0, &flYaw, flYaw1, flYaw2, flStraightFuzzyValue, iMaxChanges, iMaxChangeTime, flMaxSpeed);
+		if (Vars::Debug::Logging.Value)
+			SDK::Output("GetYawDifference", std::format("{} ({}): {}, {}", i, state.iStart, flYaw, bResult).c_str(), { 50, 127, 75 }, true);
+		
+		flYaw1 = flYaw2; // Cache for next iteration
+		
 		if (!bResult)
 			break;
 
