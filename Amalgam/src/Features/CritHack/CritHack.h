@@ -66,6 +66,14 @@ public:
 
 	float GetCritDamage() { return m_iCritDamage; }
 	float GetRangedDamage() { return m_iRangedDamage; }
+	int GetMeleeDamage() { return m_iMeleeDamage; }
+	int GetResourceDamage() { return m_iResourceDamage; }
+	int GetDesyncDamage() { return m_iDesyncDamage; }
+	int GetAvailableCrits() { return m_iAvailableCrits; }
+	int GetPotentialCrits() { return m_iPotentialCrits; }
+	bool IsCritBanned() { return m_bCritBanned; }
+	float GetDamageTilFlip() { return m_flDamageTilFlip; }
+	int GetNextCrit() { return m_iNextCrit; }
 };
 
 ADD_FEATURE(CCritHack, CritHack);
