@@ -401,7 +401,26 @@ std::unordered_map<int, Vec3> CAimbotProjectile::GetDirectPoints(Target_t& tTarg
 				mPoints[iPriority] = Vec3(0, 0, vMaxs.z - Vars::Aimbot::Projectile::VerticalShift.Value);
 			break;
 		case BOUNDS_BODY: mPoints[iPriority] = Vec3(0, 0, (vMaxs.z - vMins.z) / 2); break;
-		case BOUNDS_FEET: mPoints[iPriority] = Vec3(0, 0, vMins.z + Vars::Aimbot::Projectile::VerticalShift.Value + m_tInfo.m_vHull.z); break;
+		case BOUNDS_FEET:
+		{
+			if (tTarget.m_iTargetType == TargetEnum::Player)
+			{
+				auto aBones = F::Backtrack.GetBones(tTarget.m_pEntity);
+				if (aBones)
+				{
+					Vec3 vLeft = tTarget.m_pEntity->As<CTFPlayer>()->GetHitboxCenter(aBones, HITBOX_LEFT_FOOT);
+					Vec3 vRight = tTarget.m_pEntity->As<CTFPlayer>()->GetHitboxCenter(aBones, HITBOX_RIGHT_FOOT);
+
+					Vec3 vOff = (vLeft + vRight) * 0.5f - tTarget.m_pEntity->m_vecOrigin();
+					vOff.z = std::max(vOff.z, vMins.z) + Vars::Aimbot::Projectile::VerticalShift.Value + m_tInfo.m_vHull.z;
+					mPoints[iPriority] = vOff;
+					break;
+				}
+			}
+
+			mPoints[iPriority] = Vec3(0, 0, vMins.z + Vars::Aimbot::Projectile::VerticalShift.Value + m_tInfo.m_vHull.z);
+			break;
+		}
 		}
 	}
 
@@ -1403,7 +1422,7 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 	m_tInfo.m_flVelocity = vVelocity.Length();
 	m_tInfo.m_vAngFix = Math::VectorAngles(vVelocity);
 
-	m_tInfo.m_vHull = tProjInfo.m_vHull.Min(3);
+	m_tInfo.m_vHull = tProjInfo.m_vHull;
 	m_tInfo.m_vOffset = tProjInfo.m_vPos - m_tInfo.m_vLocalEye; m_tInfo.m_vOffset.y *= -1;
 	m_tInfo.m_flOffsetTime = m_tInfo.m_vOffset.Length() / m_tInfo.m_flVelocity; // silly
 
