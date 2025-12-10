@@ -86,6 +86,7 @@ void CVisuals::ProjectileTrace(CTFPlayer* pPlayer, CTFWeaponBase* pWeapon, const
 		Vec3 New = F::ProjSim.GetOrigin();
 
 		SDK::TraceHull(Old, New, tProjInfo.m_vHull * -1, tProjInfo.m_vHull, nMask, &filter, &trace);
+		F::ProjSim.ApplyTraceResult(trace);
 		F::ProjSim.SetupTrace(filter, nMask, pWeapon, n, bQuick);
 		if (trace.DidHit())
 		{

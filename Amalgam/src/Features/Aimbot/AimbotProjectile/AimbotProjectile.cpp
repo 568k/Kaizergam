@@ -1251,6 +1251,8 @@ bool CAimbotProjectile::TestAngle(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, Tar
 #ifdef SPLASH_DEBUG5
 			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(vOld, vNew), I::GlobalVars->curtime + 5.f, Color_t(255, 0, 0));
 #endif
+
+			F::ProjSim.ApplyTraceResult(trace);
 		}
 		else
 		{
@@ -1267,6 +1269,7 @@ bool CAimbotProjectile::TestAngle(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, Tar
 #ifdef SPLASH_DEBUG5
 			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(vStaticPos, vNew), I::GlobalVars->curtime + 5.f, Color_t(255, 0, 0));
 #endif
+			F::ProjSim.ApplyTraceResult(trace);
 			vStaticPos = vNew;
 		}
 		if (trace.DidHit())
@@ -2038,6 +2041,8 @@ bool CAimbotProjectile::TestAngle(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CBa
 			SDK::TraceHull(vStaticPos, vNew, tProjInfo.m_vHull * -1, tProjInfo.m_vHull, nMask, &filter, &trace);
 			vStaticPos = vNew;
 		}
+
+		F::ProjSim.ApplyTraceResult(trace);
 		if (trace.DidHit())
 		{
 			bool bTime = bSplash
@@ -2123,6 +2128,7 @@ bool CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBa
 			Vec3 vNew = F::ProjSim.GetOrigin();
 
 			SDK::TraceHull(vOld, vNew, tProjInfo.m_vHull * -1, tProjInfo.m_vHull, MASK_SOLID, &filter, &trace);
+			F::ProjSim.ApplyTraceResult(trace);
 			tProjInfo.m_vPos = trace.endpos;
 		}
 		m_tInfo.m_vLocalEye = tProjInfo.m_vPos; // just assume from the projectile without any offset, check validity later
