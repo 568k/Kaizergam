@@ -35,14 +35,21 @@ void CCombatHUD::Draw(CTFPlayer* pLocal)
 	bool bStreamingCrits = pWeapon->m_flCritTime() > flTickBase;
 	bool bWeaponCanCrit = F::CritHack.WeaponCanCrit(pWeapon);
 
-	Color_t tCritColor = iCrits > 0 ? Vars::Colors::IndicatorTextGood.Value : Vars::Colors::IndicatorTextBad.Value;
-	H::Draw.StringOutlined(fFont, x - iPanelWidth / 2, y, tCritColor, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, 
-		std::format("CRITS: {}/{}", iCrits, iMaxCrits).c_str());
+	if (!bWeaponCanCrit)
+	{
+		H::Draw.StringOutlined(fFont, x - iPanelWidth / 2, y, Vars::Menu::Theme::Inactive.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT, "CRITS: N/A");
+	}
+	else
+	{
+		Color_t tCritColor = iCrits > 0 ? Vars::Colors::IndicatorTextGood.Value : Vars::Colors::IndicatorTextBad.Value;
+		H::Draw.StringOutlined(fFont, x - iPanelWidth / 2, y, tCritColor, Vars::Menu::Theme::Background.Value, ALIGN_TOPLEFT,
+			std::format("CRITS: {}/{}", iCrits, iMaxCrits).c_str());
+	}
 
 	int iNextCrit = F::CritHack.GetNextCrit();
 	if (!bWeaponCanCrit)
 	{
-		H::Draw.StringOutlined(fFont, x + iPanelWidth / 2, y, Vars::Menu::Theme::Inactive.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPRIGHT, "NO CRITS");
+		H::Draw.StringOutlined(fFont, x + iPanelWidth / 2, y, Vars::Menu::Theme::Inactive.Value, Vars::Menu::Theme::Background.Value, ALIGN_TOPRIGHT, "CANNOT CRIT");
 	}
 	else if (bCritBoosted)
 	{
@@ -82,6 +89,13 @@ void CCombatHUD::Draw(CTFPlayer* pLocal)
 	float flCritRatioTarget = std::clamp(flBucket / flBucketCap, 0.f, 1.f);
 
 	static float flCritRatioDisplay = 0.f;
+	static int iLastWeaponIndex = 0;
+	const int iWeaponIndex = pWeapon->entindex();
+	if (iWeaponIndex != iLastWeaponIndex)
+	{
+		flCritRatioDisplay = flCritRatioTarget;
+		iLastWeaponIndex = iWeaponIndex;
+	}
 	const float flLerpSpeed = 0.08f;
 	flCritRatioDisplay = flCritRatioDisplay + (flCritRatioTarget - flCritRatioDisplay) * flLerpSpeed;
 	float flCritRatio = flCritRatioDisplay;
@@ -95,7 +109,7 @@ void CCombatHUD::Draw(CTFPlayer* pLocal)
 
 		if (flCritRatio > 0.001f)
 		{
-			int iBarFillWidth = static_cast<int>(iPanelWidth * flCritRatio);
+			int iBarFillWidth = std::clamp(static_cast<int>(std::round(static_cast<float>(iPanelWidth) * flCritRatio)), 0, iPanelWidth);
 			if (iBarFillWidth >= 5)
 			{
 				Color_t tColorStart = Color_t(100, 40, 140, 180);
