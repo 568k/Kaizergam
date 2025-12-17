@@ -343,6 +343,7 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 	Vec3 vSwingMins = { -flHull, -flHull, -flHull };
 	Vec3 vSwingMaxs = { flHull, flHull, flHull };
 	auto& vSimRecords = m_mRecordMap[tTarget.m_pEntity->entindex()];
+	auto& vLocalRecords = m_mRecordMap[I::EngineClient->GetLocalPlayer()];
 
 	std::vector<TickRecord*> vRecords = {};
 	if (F::Backtrack.GetRecords(tTarget.m_pEntity, vRecords))
@@ -370,6 +371,26 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 	filter.pSkip = pLocal;
 	for (auto pRecord : vRecords)
 	{
+		Vec3 vEyePos = m_vEyePos;
+		if (!vLocalRecords.empty())
+		{
+			TickRecord* pBestLocal = nullptr;
+			float flBestDelta = 1e6f;
+			for (auto& tLocalRecord : vLocalRecords)
+			{
+				float flDelta = tLocalRecord.m_flSimTime > pRecord->m_flSimTime ? tLocalRecord.m_flSimTime - pRecord->m_flSimTime : pRecord->m_flSimTime - tLocalRecord.m_flSimTime;
+				if (flDelta < flBestDelta)
+				{
+					flBestDelta = flDelta;
+					pBestLocal = &tLocalRecord;
+					if (flDelta <= TICK_INTERVAL)
+						break;
+				}
+			}
+			if (pBestLocal)
+				vEyePos = pBestLocal->m_vOrigin + pLocal->m_vecViewOffset();
+		}
+
 		Vec3 vRestoreOrigin = tTarget.m_pEntity->GetAbsOrigin();
 		Vec3 vRestoreMins = tTarget.m_pEntity->m_vecMins();
 		Vec3 vRestoreMaxs = tTarget.m_pEntity->m_vecMaxs();
@@ -378,18 +399,18 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 		tTarget.m_pEntity->m_vecMins() = pRecord->m_vMins + 0.125f; // account for origin compression
 		tTarget.m_pEntity->m_vecMaxs() = pRecord->m_vMaxs - 0.125f;
 
-		Vec3 vDiff = { 0, 0, std::clamp(m_vEyePos.z - pRecord->m_vOrigin.z, pRecord->m_vMins.z, pRecord->m_vMaxs.z) };
+		Vec3 vDiff = { 0, 0, std::clamp(vEyePos.z - pRecord->m_vOrigin.z, pRecord->m_vMins.z, pRecord->m_vMaxs.z) };
 		tTarget.m_vPos = pRecord->m_vOrigin + vDiff;
-		Aim(G::CurrentUserCmd->viewangles, Math::CalcAngle(m_vEyePos, tTarget.m_vPos), tTarget.m_vAngleTo);
+		Aim(G::CurrentUserCmd->viewangles, Math::CalcAngle(vEyePos, tTarget.m_vPos), tTarget.m_vAngleTo);
 
 		Vec3 vForward; Math::AngleVectors(tTarget.m_vAngleTo, &vForward);
-		Vec3 vTraceEnd = m_vEyePos + (vForward * flRange);
+		Vec3 vTraceEnd = vEyePos + (vForward * flRange);
 
-		SDK::TraceHull(m_vEyePos, vTraceEnd, {}, {}, MASK_SOLID, &filter, &trace);
+		SDK::TraceHull(vEyePos, vTraceEnd, {}, {}, MASK_SOLID, &filter, &trace);
 		bool bReturn = trace.m_pEnt && trace.m_pEnt == tTarget.m_pEntity;
 		if (!bReturn)
 		{
-			SDK::TraceHull(m_vEyePos, vTraceEnd, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
+			SDK::TraceHull(vEyePos, vTraceEnd, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
 			bReturn = trace.m_pEnt && trace.m_pEnt == tTarget.m_pEntity;
 		}
 
@@ -412,12 +433,12 @@ int CAimbotMelee::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBase* pW
 		case Vars::Aimbot::General::AimTypeEnum::Smooth:
 		case Vars::Aimbot::General::AimTypeEnum::Assistive:
 		{
-			auto vAngle = Math::CalcAngle(m_vEyePos, tTarget.m_vPos);
+			auto vAngle = Math::CalcAngle(vEyePos, tTarget.m_vPos);
 
 			Math::AngleVectors(vAngle, &vForward);
-			vTraceEnd = m_vEyePos + (vForward * flRange);
+			vTraceEnd = vEyePos + (vForward * flRange);
 
-			SDK::TraceHull(m_vEyePos, vTraceEnd, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
+			SDK::TraceHull(vEyePos, vTraceEnd, vSwingMins, vSwingMaxs, MASK_SOLID, &filter, &trace);
 			if (trace.m_pEnt && trace.m_pEnt == tTarget.m_pEntity)
 				return 2;
 		}
