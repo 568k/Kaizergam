@@ -226,15 +226,11 @@ void CBacktrack::MakeRecords()
 		auto& vRecords = m_mRecords[pPlayer];
 
 		TickRecord* pLastRecord = !vRecords.empty() ? &vRecords.front() : nullptr;
-		const auto& angAbs = pPlayer->GetAbsAngles();
-		const Vec3 vEyeAngles = pPlayer->GetEyeAngles();
 		vRecords.emplace_front(
 			pPlayer->m_flSimulationTime(),
 			pPlayer->m_vecOrigin(),
 			pPlayer->m_vecMins(),
 			pPlayer->m_vecMaxs(),
-			Vec3(angAbs.x, angAbs.y, angAbs.z),
-			vEyeAngles,
 			m_mDidShoot[pPlayer->entindex()]
 		);
 		TickRecord& tCurRecord = vRecords.front();
