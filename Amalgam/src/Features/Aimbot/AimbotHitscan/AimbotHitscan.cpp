@@ -1,4 +1,5 @@
 #include "AimbotHitscan.h"
+#include "../../Warp/WarpPrediction.h"
 
 #include "../Aimbot.h"
 #include "../../Resolver/Resolver.h"
@@ -847,6 +848,27 @@ void CAimbotHitscan::Run(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CUserCmd* pC
 			if (tTarget.m_bBacktrack)
 				pCmd->tick_count = TIME_TO_TICKS(tTarget.m_pRecord->m_flSimTime) + TIME_TO_TICKS(F::Backtrack.GetFakeInterp());
 		}
+
+		if (tTarget.m_iTargetType == TargetEnum::Player && F::WarpPrediction.IsWarping(tTarget.m_pEntity->entindex()) && H::Entities.GetLagCompensation(tTarget.m_pEntity->entindex()))
+		{
+			Vec3 vPredictedPos;
+			if (F::WarpPrediction.PredictWarpPosition(tTarget.m_pEntity->entindex(), vPredictedPos))
+			{
+				Vec3 vEyePos = pLocal->GetShootPos();
+				Vec3 vPredictedAngle = Math::CalcAngle(vEyePos, vPredictedPos);
+
+				float flAlignment = F::WarpPrediction.GetAlignmentFactor(tTarget.m_pEntity->entindex(), vPredictedAngle);
+
+				if (flAlignment > 0.7f)
+				{
+					tTarget.m_vAngleTo = vPredictedAngle;
+					tTarget.m_vPos = vPredictedPos;
+
+					tTarget.m_bWarpPredicted = true;
+				}
+			}
+		}
+
 		DrawVisuals(pLocal, tTarget, nWeaponID);
 
 		Aim(pCmd, tTarget.m_vAngleTo);

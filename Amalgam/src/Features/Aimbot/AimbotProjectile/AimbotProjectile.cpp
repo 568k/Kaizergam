@@ -435,218 +435,346 @@ std::unordered_map<int, Vec3> CAimbotProjectile::GetDirectPoints(Target_t& tTarg
 static inline std::vector<std::pair<Vec3, int>> ComputeSphere(float flRadius, int iSamples)
 {
 	std::vector<std::pair<Vec3, int>> vPoints;
-	vPoints.reserve(iSamples);
+	vPoints.reserve(iSamples + 1);
 
-	float flRotateX = Vars::Aimbot::Projectile::SplashRotateX.Value < 0.f ? SDK::StdRandomFloat(0.f, 360.f) : Vars::Aimbot::Projectile::SplashRotateX.Value;
-	float flRotateY = Vars::Aimbot::Projectile::SplashRotateY.Value < 0.f ? SDK::StdRandomFloat(0.f, 360.f) : Vars::Aimbot::Projectile::SplashRotateY.Value;
+	// pasted from northern, thanks
+	const float flRotateX = (Vars::Aimbot::Projectile::SplashRotateX.Value < 0.f) ?
+		SDK::StdRandomFloat(0.f, 360.f) :
+		Vars::Aimbot::Projectile::SplashRotateX.Value;
 
-	int iPointType = Vars::Aimbot::Projectile::SplashGrates.Value ? PointTypeEnum::Regular | PointTypeEnum::Obscured : PointTypeEnum::Regular;
-	if (Vars::Aimbot::Projectile::RocketSplashMode.Value == Vars::Aimbot::Projectile::RocketSplashModeEnum::SpecialHeavy)
-		iPointType |= PointTypeEnum::ObscuredExtra | PointTypeEnum::ObscuredMulti;
+	const float flRotateY = (Vars::Aimbot::Projectile::SplashRotateY.Value < 0.f) ?
+		SDK::StdRandomFloat(0.f, 360.f) :
+		Vars::Aimbot::Projectile::SplashRotateY.Value;
 
-	float a = PI * (3.f - sqrtf(5.f));
-	for (int n = 0; n < iSamples; n++)
-	{
-		float t = a * n;
-		float y = 1 - (n / (iSamples - 1.f)) * 2;
-		float r = sqrtf(1 - powf(y, 2));
-		float x = cosf(t) * r;
-		float z = sinf(t) * r;
+	// precompute rotation matrtix
+	float sp, sy, cp, cy;
+	Math::SinCos(DEG2RAD(flRotateX), &sp, &cp);
+	Math::SinCos(DEG2RAD(flRotateY), &sy, &cy);
 
-		Vec3 vPoint = Vec3(x, y, z) * flRadius;
-		vPoint = Math::RotatePoint(vPoint, {}, { flRotateX, flRotateY });
+	const Vec3 vX(cy * cp, -sy, cy * sp);
+	const Vec3 vY(sy * cp, cy, sy * sp);
+	const Vec3 vZ(-sp, 0.f, cp);
 
-		vPoints.emplace_back(vPoint, iPointType);
+	int iPointType = Vars::Aimbot::Projectile::SplashGrates.Value ?
+		(PointTypeEnum::Regular | PointTypeEnum::Obscured) :
+		PointTypeEnum::Regular;
+
+	if (Vars::Aimbot::Projectile::RocketSplashMode.Value ==
+		Vars::Aimbot::Projectile::RocketSplashModeEnum::SpecialHeavy) {
+		iPointType |= (PointTypeEnum::ObscuredExtra | PointTypeEnum::ObscuredMulti);
 	}
-	vPoints.emplace_back(Vec3(0.f, 0.f, -1.f) * flRadius, iPointType);
+
+	const float GOLDEN_ANGLE = 2.399963229728653f;
+	const float invSamples = 1.0f / iSamples;
+
+	for (int i = 0; i < iSamples; ++i) {
+		const float t = (i + 0.5f) * invSamples;
+
+		const float z_unit = 1.0f - 2.0f * t;
+		const float sinPhi = sqrtf(1.0f - z_unit * z_unit);
+
+		const float theta = GOLDEN_ANGLE * i;
+		float sinTheta, cosTheta;
+		Math::SinCos(theta, &sinTheta, &cosTheta);
+
+		const float x_unit = cosTheta * sinPhi;
+		const float y_unit = sinTheta * sinPhi;
+		// z_unit is already calculated
+
+		// manual rotation
+		const float x_final = (vX.x * x_unit + vX.y * y_unit + vX.z * z_unit) * flRadius;
+		const float y_final = (vY.x * x_unit + vY.y * y_unit + vY.z * z_unit) * flRadius;
+		const float z_final = (vZ.x * x_unit + vZ.y * y_unit + vZ.z * z_unit) * flRadius;
+
+		vPoints.emplace_back(Vec3(x_final, y_final, z_final), iPointType);
+	}
+
+	// same here
+	const float bx = vX.z * -flRadius;
+	const float by = vY.z * -flRadius;
+	const float bz = vZ.z * -flRadius;
+	vPoints.emplace_back(Vec3(bx, by, bz), iPointType);
 
 	return vPoints;
 };
 
 template <class T>
-static inline void TracePoint(Vec3& vPoint, int& iType, Vec3& vTargetEye, Info_t& tInfo, T& vPoints, std::function<bool(CGameTrace& trace, bool& bErase, bool& bNormal)> checkPoint, int i = 0)
+static inline void TracePoint(Vec3& vPoint, int& iType, Vec3& vTargetEye, Info_t& tInfo,
+	T& vPoints, std::function<bool(CGameTrace& trace, bool& bErase, bool& bNormal)> checkPoint, int i = 0)
 {
-	// if anyone knows ways to further optimize this or just a better method, let me know!
+	const int iOriginalType = iType;
+	size_t iStartSize = vPoints.size();
 
-	int iOriginalType = iType;
-	bool bErase = false, bNormal = false;
-
-	CGameTrace trace = {};
-	CTraceFilterWorldAndPropsOnly filter = {};
+	bool bErase = false;
+	bool bNormal = false;
+	CGameTrace trace;
+	CTraceFilterWorldAndPropsOnly filter;
 
 #if defined(SPLASH_DEBUG1) || defined(SPLASH_DEBUG2)
-	auto drawTrace = [](bool bSuccess, Color_t tColor, CGameTrace& trace)
-		{
-			Vec3 vMins = Vec3(-1, -1, -1) / (bSuccess ? 1 : 2), vMaxs = Vec3(1, 1, 1) / (bSuccess ? 1 : 2);
-			Vec3 vAngles = Math::VectorAngles(trace.plane.normal);
-			G::BoxStorage.emplace_back(trace.endpos, vMins, vMaxs, vAngles, I::GlobalVars->curtime + 60.f, tColor.Alpha(tColor.a / (bSuccess ? 1 : 10)), Color_t(0, 0, 0, 0));
-			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(trace.startpos, trace.endpos), I::GlobalVars->curtime + 60.f, tColor.Alpha(tColor.a / (bSuccess ? 1 : 10)));
+	auto DrawTrace = [](bool bSuccess, Color_t tColor, CGameTrace& trace) {
+		Vec3 vMins = Vec3(-1, -1, -1) / (bSuccess ? 1 : 2);
+		Vec3 vMaxs = Vec3(1, 1, 1) / (bSuccess ? 1 : 2);
+		Vec3 vAngles = Math::VectorAngles(trace.plane.normal);
+
+		G::BoxStorage.emplace_back(trace.endpos, vMins, vMaxs, vAngles,
+			I::GlobalVars->curtime + 60.f,
+			tColor.Alpha(tColor.a / (bSuccess ? 1 : 10)),
+			Color_t(0, 0, 0, 0));
+
+		G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(trace.startpos, trace.endpos),
+			I::GlobalVars->curtime + 60.f,
+			tColor.Alpha(tColor.a / (bSuccess ? 1 : 10)));
 		};
 #endif
 
 	if (iType & PointTypeEnum::Regular)
 	{
-		SDK::TraceHull(vTargetEye, vPoint, tInfo.m_vHull * -1, tInfo.m_vHull, MASK_SOLID, &filter, &trace);
+
+		SDK::Trace(tInfo.m_vLocalEye, vPoint, MASK_SOLID, &filter, &trace);
+
 #ifdef SPLASH_DEBUG6
 		s_mTraceCount["Splash regular"]++;
 #endif
 
+
 		if (checkPoint(trace, bErase, bNormal))
 		{
+	
 			if (i % Vars::Aimbot::Projectile::SplashNormalSkip.Value)
 				vPoints.pop_back();
+
 #ifdef SPLASH_DEBUG1
-			else
-				drawTrace(!bNormal, Vars::Colors::Local.Value, trace);
+			else if (!bNormal)
+				DrawTrace(false, Vars::Colors::Local.Value, trace);
 #endif
 		}
 
+
 		if (bErase)
+		{
 			iType = 0;
+			return;
+		}
 		else if (bNormal)
-			iType &= ~PointTypeEnum::Regular;
+		{
+			iType &= ~PointTypeEnum::Regular; 
+		}
 		else
-			iType &= ~PointTypeEnum::Obscured;
+		{
+			iType &= ~PointTypeEnum::Obscured; 
+		}
 	}
+
 	if (iType & PointTypeEnum::ObscuredExtra)
 	{
-		bErase = false, bNormal = false;
-		size_t iOriginalSize = vPoints.size();
+		bErase = false;
+		bNormal = false;
 
+	
+		Vec3 toTarget = vTargetEye - tInfo.m_vLocalEye;
+		Vec3 toPoint = vPoint - vTargetEye;
+		if (toTarget.Dot(toPoint) > 0.f)
 		{
-			// necessary performance wise?
-			if (bNormal = (tInfo.m_vLocalEye - vTargetEye).Dot(vTargetEye - vPoint) > 0.f)
-				goto breakOutExtra;
+			bNormal = true; 
+		}
+		else
+		{
 
-			if (!(iOriginalType & PointTypeEnum::Regular)) // don't do the same trace over again
+			if (!(iOriginalType & PointTypeEnum::Regular))
 			{
-				SDK::Trace(vTargetEye, vPoint, MASK_SOLID, &filter, &trace);
+				SDK::Trace(tInfo.m_vLocalEye, vPoint, MASK_SOLID | CONTENTS_NOSTARTSOLID, &filter, &trace);
+
 #ifdef SPLASH_DEBUG6
 				s_mTraceCount["Splash rocket (2)"]++;
 #endif
-				bNormal = !trace.m_pEnt || trace.fraction == 1.f;
+
+				bNormal = !trace.m_pEnt || trace.fraction > 1.f || trace.allsolid || trace.startsolid;
+
 #ifdef SPLASH_DEBUG2
-				drawTrace(!bNormal, Vars::Colors::IndicatorTextMid.Value, trace);
+				DrawTrace(!bNormal, Vars::Colors::IndicatorTextMid.Value, trace);
 #endif
-				if (bNormal)
-					goto breakOutExtra;
 			}
 
-			filter.pSkip = trace.m_pEnt->GetClassID() != ETFClassID::CWorld || trace.hitbox ? trace.m_pEnt : nullptr; // make sure we get past entity or prop
-			SDK::Trace(trace.endpos - (vTargetEye - vPoint).Normalized(), vPoint, MASK_SOLID | CONTENTS_NOSTARTSOLID, &filter, &trace);
-			filter.pSkip = nullptr;
-#ifdef SPLASH_DEBUG6
-			s_mTraceCount["Splash rocket (2, 2)"]++;
-#endif
-			bNormal = trace.fraction == 1.f || trace.allsolid || (trace.startpos - trace.endpos).IsZero() || trace.surface.flags & (/*SURF_NODRAW |*/ SURF_SKY);
-#ifdef SPLASH_DEBUG2
-			drawTrace(!bNormal, Vars::Colors::IndicatorTextBad.Value, trace);
-#endif
-			if (bNormal)
-				goto breakOutExtra;
-
-			if (checkPoint(trace, bErase, bNormal))
+	
+			if (!bNormal)
 			{
-				SDK::Trace(trace.endpos + trace.plane.normal, vTargetEye, MASK_SHOT, &filter, &trace);
+			
+				if (trace.m_pEnt && (trace.m_pEnt->GetClassID() != ETFClassID::CWorld || trace.hitbox))
+					filter.pSkip = trace.m_pEnt;
+
+		
+				Vec3 startPos = trace.endpos - (vTargetEye - vPoint).Normalized();
+				SDK::Trace(startPos, vPoint, MASK_SOLID | CONTENTS_NOSTARTSOLID, &filter, &trace);
+				filter.pSkip = nullptr;
+
 #ifdef SPLASH_DEBUG6
-				s_mTraceCount["Splash rocket check (2)"]++;
+				s_mTraceCount["Splash rocket (2, 2)"]++;
 #endif
+
+		
+				bNormal = trace.fraction > 1.f || trace.allsolid || trace.startsolid ||
+					(trace.startpos - trace.endpos).IsZero() ||
+					trace.surface.flags & SURF_SKY;
+
 #ifdef SPLASH_DEBUG2
-				drawTrace(trace.fraction >= 1.f, Vars::Colors::IndicatorTextMisc.Value, trace);
+				DrawTrace(!bNormal, Vars::Colors::IndicatorTextBad.Value, trace);
 #endif
-				if (trace.fraction < 1.f)
-					vPoints.pop_back();
+
+				if (!bNormal && checkPoint(trace, bErase, bNormal))
+				{
+					SDK::Trace(trace.endpos + trace.plane.normal, vTargetEye,
+						MASK_SHOT | CONTENTS_NOSTARTSOLID, &filter, &trace);
+
+#ifdef SPLASH_DEBUG6
+					s_mTraceCount["Splash rocket check (2)"]++;
+#endif
+
+#ifdef SPLASH_DEBUG2
+					DrawTrace(trace.fraction >= 1.f, Vars::Colors::IndicatorTextMisc.Value, trace);
+#endif
+
+	
+					if (trace.DidHit())
+						vPoints.pop_back();
+				}
 			}
 		}
 
-		breakOutExtra:
-		if (vPoints.size() != iOriginalSize)
+	
+		if (vPoints.size() != iStartSize)
+		{
 			iType = 0;
+		}
 		else if (bErase || bNormal)
+		{
 			iType &= ~PointTypeEnum::ObscuredExtra;
+		}
 	}
+
+
 	if (iType & PointTypeEnum::Obscured)
 	{
-		bErase = false, bNormal = false;
-		size_t iOriginalSize = vPoints.size();
+		bErase = false;
+		bNormal = false;
 
-		if (bNormal = (tInfo.m_vLocalEye - vTargetEye).Dot(vTargetEye - vPoint) > 0.f)
-			goto breakOut;
 
-		if (tInfo.m_iSplashMode == Vars::Aimbot::Projectile::RocketSplashModeEnum::Regular) // just do this for non rockets, it's less expensive
+		Vec3 toTarget = vTargetEye - tInfo.m_vLocalEye;
+		Vec3 toPoint = vPoint - vTargetEye;
+		if (toTarget.Dot(toPoint) > 0.f)
 		{
-			SDK::Trace(vPoint, vTargetEye, MASK_SHOT, &filter, &trace);
+			bNormal = true;
+		}
+
+		else if (tInfo.m_iSplashMode == Vars::Aimbot::Projectile::RocketSplashModeEnum::Regular)
+		{
+	
+			SDK::Trace(vPoint, vTargetEye, MASK_SHOT | CONTENTS_NOSTARTSOLID, &filter, &trace);
+
 #ifdef SPLASH_DEBUG6
 			s_mTraceCount["Splash grate check"]++;
 #endif
+
 			bNormal = trace.DidHit();
-#ifdef SPLASH_DEBUG2
-			drawTrace(!bNormal, Vars::Colors::IndicatorGood.Value, trace);
-#endif
-			if (bNormal)
-				goto breakOut;
 
-			SDK::TraceHull(vPoint, vTargetEye, tInfo.m_vHull * -1, tInfo.m_vHull, MASK_SOLID, &filter, &trace);
+#ifdef SPLASH_DEBUG2
+			DrawTrace(!bNormal, Vars::Colors::IndicatorGood.Value, trace);
+#endif
+
+
+			if (!bNormal)
+			{
+				SDK::Trace(vPoint, vTargetEye, MASK_SOLID | CONTENTS_NOSTARTSOLID, &filter, &trace);
+
 #ifdef SPLASH_DEBUG6
-			s_mTraceCount["Splash grate"]++;
+				s_mTraceCount["Splash grate"]++;
 #endif
 
-			checkPoint(trace, bErase, bNormal);
+				checkPoint(trace, bErase, bNormal);
+
 #ifdef SPLASH_DEBUG2
-			drawTrace(!bNormal, Vars::Colors::Local.Value, trace);
+				DrawTrace(!bNormal, Vars::Colors::Local.Value, trace);
 #endif
+			}
 		}
-		else // currently experimental, there may be a more efficient way to do this?
+		else
 		{
+		
 			SDK::Trace(vPoint, vTargetEye, MASK_SOLID | CONTENTS_NOSTARTSOLID, &filter, &trace);
+
 #ifdef SPLASH_DEBUG6
 			s_mTraceCount["Splash rocket (1)"]++;
 #endif
-			bNormal = trace.fraction == 1.f || trace.allsolid || trace.surface.flags & SURF_SKY;
-#ifdef SPLASH_DEBUG2
-			drawTrace(!bNormal, Vars::Colors::IndicatorMid.Value, trace);
-#endif
-			if (!bNormal && trace.surface.flags & SURF_NODRAW)
-			{
-				if (bNormal = !(iType & PointTypeEnum::ObscuredMulti))
-					goto breakOut;
 
-				CGameTrace trace2 = {};
-				SDK::Trace(trace.endpos - (vPoint - vTargetEye).Normalized(), vTargetEye, MASK_SOLID | CONTENTS_NOSTARTSOLID, &filter, &trace2);
+	
+			bNormal = trace.fraction > 1.f || trace.allsolid || trace.startsolid ||
+				trace.surface.flags & SURF_SKY;
+
+#ifdef SPLASH_DEBUG2
+			DrawTrace(!bNormal, Vars::Colors::IndicatorMid.Value, trace);
+#endif
+
+
+			if (!bNormal && (trace.surface.flags & SURF_NODRAW))
+			{
+				if (iType & PointTypeEnum::ObscuredMulti)
+				{
+					CGameTrace trace2;
+					Vec3 startPos = trace.endpos - (vPoint - vTargetEye).Normalized();
+					SDK::Trace(startPos, vTargetEye, MASK_SOLID | CONTENTS_NOSTARTSOLID, &filter, &trace2);
+
 #ifdef SPLASH_DEBUG6
-				s_mTraceCount["Splash rocket (1, 2)"]++;
+					s_mTraceCount["Splash rocket (1, 2)"]++;
 #endif
-				bNormal = trace2.fraction == 1.f || trace.allsolid || (trace2.startpos - trace2.endpos).IsZero() || trace2.surface.flags & (SURF_NODRAW | SURF_SKY);
-#ifdef SPLASH_DEBUG2
-				drawTrace(!bNormal, Vars::Colors::IndicatorBad.Value, trace2);
-#endif
-				if (!bNormal)
-					trace = trace2;
-			}
-			if (bNormal)
-				goto breakOut;
 
-			if (checkPoint(trace, bErase, bNormal))
+					bNormal = trace2.fraction > 1.f || trace2.allsolid || trace2.startsolid ||
+						(trace2.startpos - trace2.endpos).IsZero() ||
+						trace2.surface.flags & (SURF_NODRAW | SURF_SKY);
+
+#ifdef SPLASH_DEBUG2
+					DrawTrace(!bNormal, Vars::Colors::IndicatorBad.Value, trace2);
+#endif
+
+					if (!bNormal)
+						trace = trace2;
+				}
+				else
+				{
+					bNormal = true;
+				}
+			}
+
+			if (!bNormal && checkPoint(trace, bErase, bNormal))
 			{
-				SDK::Trace(trace.endpos + trace.plane.normal, vTargetEye, MASK_SHOT, &filter, &trace);
+				SDK::Trace(trace.endpos + trace.plane.normal, vTargetEye,
+					MASK_SHOT | CONTENTS_NOSTARTSOLID, &filter, &trace);
+
 #ifdef SPLASH_DEBUG6
 				s_mTraceCount["Splash rocket check (1)"]++;
 #endif
+
 #ifdef SPLASH_DEBUG2
-				drawTrace(!bNormal, Vars::Colors::IndicatorMisc.Value, trace);
+				DrawTrace(trace.fraction >= 1.f, Vars::Colors::IndicatorMisc.Value, trace);
 #endif
-				if (trace.fraction < 1.f)
+
+		
+				if (trace.DidHit())
 					vPoints.pop_back();
 			}
 		}
 
-		breakOut:
-		if (vPoints.size() != iOriginalSize)
-			iType = 0;
+
+		if (vPoints.size() != iStartSize)
+		{
+			iType = 0; 
+		}
 		else if (bErase || bNormal)
-			iType &= ~PointTypeEnum::Obscured;
+		{
+			iType &= ~PointTypeEnum::Obscured; 
+		}
 		else
+		{
 			iType &= ~PointTypeEnum::Regular;
+		}
 	}
 }
 
@@ -1005,7 +1133,7 @@ static inline void SolveProjectileSpeed(CTFWeaponBase* pWeapon, const Vec3& vLoc
 	flVelocity = flVelocity - flVelocity * flTime * flDrag;
 }
 
-void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTargetPos, int iSimTime, Solution_t& out, bool bAccuracy, bool bHighArc)
+void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTargetPos, int iSimTime, Solution_t& out, bool bAccuracy, int iPitchPreference)
 {
 	if (out.m_iCalculated != CalculatedEnum::Pending)
 		return;
@@ -1024,20 +1152,27 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 
 		Vec3 vDelta = vTargetPos - vLocalPos;
 		float flDist = vDelta.Length2D();
-		const float flDist2 = flDist * flDist;
-		const float flVel2 = flVelocity * flVelocity;
-		const float flVel4 = flVel2 * flVel2;
 
 		Vec3 vAngleTo = Math::CalcAngle(vLocalPos, vTargetPos);
 		if (!flGrav)
 			flPitch = -DEG2RAD(vAngleTo.x);
 		else
-		{	// arch
-			float flRoot = flVel4 - flGrav * (flGrav * flDist2 + 2.f * vDelta.z * flVel2);
+		{	// arch trajectory pass reverted to first commit because im not in the mood to make it better
+			float flRoot = pow(flVelocity, 4) - flGrav * (flGrav * pow(flDist, 2) + 2.f * vDelta.z * pow(flVelocity, 2));
 			if (out.m_iCalculated = flRoot < 0.f ? CalculatedEnum::Bad : CalculatedEnum::Pending)
 				return;
-			const float flSqrt = sqrtf(flRoot);
-			flPitch = atan((flVel2 + (bHighArc ? flSqrt : -flSqrt)) / (flGrav * flDist));
+			float flPitchLow = atan((pow(flVelocity, 2) - sqrt(flRoot)) / (flGrav * flDist));
+			float flPitchHigh = atan((pow(flVelocity, 2) + sqrt(flRoot)) / (flGrav * flDist));
+			
+			if (iPitchPreference == 1)
+				flPitch = flPitchLow;
+			else if (iPitchPreference == 2)
+				flPitch = flPitchHigh;
+			else
+			{
+				bool bObstructed = !SDK::VisPosWorld(nullptr, nullptr, vLocalPos, vTargetPos, MASK_SHOT);
+				flPitch = bObstructed ? flPitchHigh : flPitchLow;
+			}
 		}
 		out.m_flTime = flDist / (cos(flPitch) * flVelocity) - m_tInfo.m_flOffsetTime + flDragTime;
 		out.m_flPitch = flPitch = -RAD2DEG(flPitch) - m_tInfo.m_vAngFix.x;
@@ -1096,20 +1231,29 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 
 		Vec3 vDelta = vTargetPos - tProjInfo.m_vPos;
 		float flDist = vDelta.Length2D();
-		const float flDist2 = flDist * flDist;
-		const float flVel2 = flVelocity * flVelocity;
-		const float flVel4 = flVel2 * flVel2;
 
 		Vec3 vAngleTo = Math::CalcAngle(tProjInfo.m_vPos, vTargetPos);
 		if (!flGrav)
 			out.m_flPitch = -DEG2RAD(vAngleTo.x);
 		else
 		{	// arch
-			float flRoot = flVel4 - flGrav * (flGrav * flDist2 + 2.f * vDelta.z * flVel2);
+			const float flVel2 = flVelocity * flVelocity;
+			const float flVel4 = flVel2 * flVel2;
+			const float flRoot = flVel4 - flGrav * (flGrav * flDist * flDist + 2.f * vDelta.z * flVel2);
 			if (out.m_iCalculated = flRoot < 0.f ? CalculatedEnum::Bad : CalculatedEnum::Pending)
 				return;
-			const float flSqrt = sqrtf(flRoot);
-			out.m_flPitch = atan((flVel2 + (bHighArc ? flSqrt : -flSqrt)) / (flGrav * flDist));
+			float flPitchLow2 = atan((flVel2 - sqrt(flRoot)) / (flGrav * flDist));
+			float flPitchHigh2 = atan((flVel2 + sqrt(flRoot)) / (flGrav * flDist));
+			
+			if (iPitchPreference == 1)
+				out.m_flPitch = flPitchLow2;
+			else if (iPitchPreference == 2)
+				out.m_flPitch = flPitchHigh2;
+			else
+			{
+				bool bObstructed2 = !SDK::VisPosWorld(nullptr, nullptr, tProjInfo.m_vPos, vTargetPos, MASK_SHOT);
+				out.m_flPitch = bObstructed2 ? flPitchHigh2 : flPitchLow2;
+			}
 		}
 		out.m_flTime = flDist / (cos(out.m_flPitch) * flVelocity) + flDragTime;
 	}
@@ -1141,7 +1285,7 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 			Vec3 vTarget = Math::RotatePoint(vTargetPos - vLocalPos, {}, { 0, -flYaw, 0 });
 			Vec3 vForward; Math::AngleVectors(tProjInfo.m_vAng - Vec3(0, flYaw, 0), &vForward); vForward.y = 0; vForward.Normalize();
 			float flB = 2 * (vShootPos.x * vForward.x + vShootPos.z * vForward.z);
-			float flC = ((vShootPos.x * vShootPos.x) + (vShootPos.z * vShootPos.z)) - ((vTarget.x * vTarget.x) + (vTarget.z * vTarget.z));
+			float flC = (powf(vShootPos.x, 2) + powf(vShootPos.z, 2)) - (powf(vTarget.x, 2) + powf(vTarget.z, 2));
 			auto vSolutions = Math::SolveQuadratic(1.f, flB, flC);
 			if (!vSolutions.empty())
 			{
@@ -1154,6 +1298,7 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 	iTimeTo = int(out.m_flTime / TICK_INTERVAL) + 1;
 	out.m_iCalculated = iTimeTo > iSimTime ? CalculatedEnum::Time : CalculatedEnum::Good;
 }
+
 
 
 
@@ -1258,8 +1403,6 @@ bool CAimbotProjectile::TestAngle(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, Tar
 #ifdef SPLASH_DEBUG5
 			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(vOld, vNew), I::GlobalVars->curtime + 5.f, Color_t(255, 0, 0));
 #endif
-
-			F::ProjSim.ApplyTraceResult(trace);
 		}
 		else
 		{
@@ -1276,7 +1419,6 @@ bool CAimbotProjectile::TestAngle(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, Tar
 #ifdef SPLASH_DEBUG5
 			G::LineStorage.emplace_back(std::pair<Vec3, Vec3>(vStaticPos, vNew), I::GlobalVars->curtime + 5.f, Color_t(255, 0, 0));
 #endif
-			F::ProjSim.ApplyTraceResult(trace);
 			vStaticPos = vNew;
 		}
 		if (trace.DidHit())
@@ -1432,7 +1574,7 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 	m_tInfo.m_flVelocity = vVelocity.Length();
 	m_tInfo.m_vAngFix = Math::VectorAngles(vVelocity);
 
-	m_tInfo.m_vHull = tProjInfo.m_vHull;
+	m_tInfo.m_vHull = tProjInfo.m_vHull.Min(3);
 	m_tInfo.m_vOffset = tProjInfo.m_vPos - m_tInfo.m_vLocalEye; m_tInfo.m_vOffset.y *= -1;
 	m_tInfo.m_flOffsetTime = m_tInfo.m_vOffset.Length() / m_tInfo.m_flVelocity; // silly
 
@@ -1464,14 +1606,7 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 	
 	Vec3 vAngleTo, vPredicted, vTarget;
 	int iLowestPriority = std::numeric_limits<int>::max(); float flLowestDist = std::numeric_limits<float>::max();
-	float flLowestTimeDelta = std::numeric_limits<float>::max(); float flLowestFlightTime = std::numeric_limits<float>::max();
 	int iLowestSmoothPriority = iLowestPriority; float flLowestSmoothDist = flLowestDist;
-	float flLowestSmoothTimeDelta = flLowestTimeDelta; float flLowestSmoothFlightTime = flLowestFlightTime;
-	const float flTimeTol = std::max(TICK_INTERVAL, m_tInfo.m_flBoundingTime);
-	
-	std::vector<Point_t> vSplashPoints;
-	std::vector<std::tuple<Point_t, int, int>> vPoints;
-	vPoints.reserve(6);
 	for (int i = -TIME_TO_TICKS(m_tInfo.m_flLatency); i <= iMaxTime; i++)
 	{
 		if (!tStorage.m_bFailed)
@@ -1479,13 +1614,11 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 			F::MoveSim.RunTick(tStorage);
 			tTarget.m_vPos = GetSimulatedPos(tStorage);
 		}
-		else if (tTarget.m_iTargetType == TargetEnum::Player)
-			break;
 		if (i < 0)
 			continue;
 
 		bool bDirectBreaks = true;
-		vSplashPoints.clear();
+		std::vector<Point_t> vSplashPoints = {};
 		if (iSplash)
 		{
 			Solution_t solution; CalculateAngle(m_tInfo.m_vLocalEye, tTarget.m_vPos, i, solution, false);
@@ -1526,8 +1659,7 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 		if (bDirectBreaks && mDirectPoints.empty())
 			break;
 
-		vPoints.clear();
-		vPoints.reserve(mDirectPoints.size() + vSplashPoints.size());
+		std::vector<std::tuple<Point_t, int, int>> vPoints = {};
 		for (auto& [iIndex, vPoint] : mDirectPoints)
 			vPoints.emplace_back(Point_t(tTarget.m_vPos + vPoint, {}), iIndex + (iSplash == Vars::Aimbot::Projectile::SplashPredictionEnum::Prefer ? m_tInfo.m_iSplashCount : 0), iIndex);
 		for (auto& vPoint : vSplashPoints)
@@ -1544,154 +1676,79 @@ int CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBas
 				//vPoint.m_vPoint = PullPoint(vPoint.m_vPoint, m_tInfo.m_vLocalEye, m_tInfo, tTarget.m_pEntity->m_vecMins(), tTarget.m_pEntity->m_vecMaxs(), tTarget.m_vPos);
 
 			float flDist = bSplash ? tTarget.m_vPos.DistTo(vPoint.m_vPoint) : flLowestDist;
-			bool bPriority = iPriority <= iLowestPriority;
-			bool bTime = bSplash || i > 0 || tStorage.m_MoveData.m_vecVelocity.IsZero();
-			bool bDist = true;
-
+			bool bPriority = bSplash ? iPriority <= iLowestPriority : iPriority < iLowestPriority;
+			bool bTime = bSplash || m_tInfo.m_iPrimeTime < i || tStorage.m_MoveData.m_vecVelocity.IsZero();
+			bool bDist = !bSplash || flDist < flLowestDist;
 			if (!bSplash && !bPriority)
 				mDirectPoints.erase(iIndex);
 			if (!bPriority || !bTime || !bDist)
 				continue;
 
-			Solution_t tSolLow; CalculateAngle(m_tInfo.m_vLocalEye, vPoint.m_vPoint, i, tSolLow);
-			if (!bSplash && (tSolLow.m_iCalculated == CalculatedEnum::Good || tSolLow.m_iCalculated == CalculatedEnum::Bad))
-				mDirectPoints.erase(iIndex);
+			bool bCalculatedAny = false;
+			bool bHitSolidAny = false;
 
-			const float flPredTime = TICKS_TO_TIME(i);
-			const bool bMoving = !tStorage.m_bFailed && !tStorage.m_MoveData.m_vecVelocity.IsZero();
-
-			Solution_t tSolHigh;
-			const bool bHasHighArc = m_tInfo.m_flGravity && (CalculateAngle(m_tInfo.m_vLocalEye, vPoint.m_vPoint, i, tSolHigh, true, true), tSolHigh.m_iCalculated == CalculatedEnum::Good);
-
-			auto TimeAligned = [&](const Solution_t& tSol)
-				{
-					return !bMoving || fabsf(tSol.m_flTime - flPredTime) <= flTimeTol;
-				};
-
-			bool bUsingLowArc = true;
-			Solution_t tSolUse = tSolLow;
-			if (tSolUse.m_iCalculated != CalculatedEnum::Good || !TimeAligned(tSolUse))
+			for (int iPitch = 1; iPitch <= 2; iPitch++)
 			{
-				if (bHasHighArc && TimeAligned(tSolHigh))
+				vPoint.m_tSolution.m_iCalculated = CalculatedEnum::Pending;
+				CalculateAngle(m_tInfo.m_vLocalEye, vPoint.m_vPoint, i, vPoint.m_tSolution, true, iPitch);
+
+				if (!bSplash && (vPoint.m_tSolution.m_iCalculated == CalculatedEnum::Good || vPoint.m_tSolution.m_iCalculated == CalculatedEnum::Bad))
+					bCalculatedAny = true;
+				if (vPoint.m_tSolution.m_iCalculated != CalculatedEnum::Good)
+					continue;
+
+				if (Vars::Aimbot::Projectile::HuntsmanPullPoint.Value && tTarget.m_nAimedHitbox == HITBOX_HEAD)
 				{
-					tSolUse = tSolHigh;
-					bUsingLowArc = false;
-				}
-			}
-			if (tSolUse.m_iCalculated != CalculatedEnum::Good)
-				continue;
-
-			float flTimeDelta = fabsf(tSolUse.m_flTime - flPredTime);
-			float flFlightTime = tSolUse.m_flTime;
-			if (bMoving && flTimeDelta > flTimeTol)
-				continue;
-
-			vPoint.m_tSolution = tSolUse;
-
-			if (Vars::Aimbot::Projectile::HuntsmanPullPoint.Value && tTarget.m_nAimedHitbox == HITBOX_HEAD)
-			{
-				Solution_t tSolution;
-				CalculateAngle(m_tInfo.m_vLocalEye, vOriginalPoint, std::numeric_limits<int>::max(), tSolution);
-				vPoint.m_tSolution.m_flPitch = tSolution.m_flPitch, vPoint.m_tSolution.m_flYaw = tSolution.m_flYaw;
-			}
-
-			Vec3 vAngles; Aim(G::CurrentUserCmd->viewangles, { vPoint.m_tSolution.m_flPitch, vPoint.m_tSolution.m_flYaw, 0.f }, vAngles);
-			std::vector<Vec3> vProjLines; bool bHitSolid = false;
-
-			bool bHit = TestAngle(pLocal, pWeapon, tTarget, vPoint.m_vPoint, vAngles, i, bSplash, &bHitSolid, &vProjLines);
-			if (!bHit && bHasHighArc && bUsingLowArc && TimeAligned(tSolHigh))
-			{
-				vPoint.m_tSolution = tSolHigh;
-				Aim(G::CurrentUserCmd->viewangles, { vPoint.m_tSolution.m_flPitch, vPoint.m_tSolution.m_flYaw, 0.f }, vAngles);
-				vProjLines.clear();
-				bHit = TestAngle(pLocal, pWeapon, tTarget, vPoint.m_vPoint, vAngles, i, bSplash, &bHitSolid, &vProjLines);
-				if (bHit)
-				{
-					flTimeDelta = fabsf(vPoint.m_tSolution.m_flTime - flPredTime);
-					flFlightTime = vPoint.m_tSolution.m_flTime;
-				}
-			}
-
-			if (bHit)
-			{
-				bool bBetter = false;
-				if (iPriority < iLowestPriority)
-					bBetter = true;
-				else if (iPriority == iLowestPriority)
-				{
-					if (flTimeDelta < flLowestTimeDelta - 0.0001f)
-						bBetter = true;
-					else if (fabsf(flTimeDelta - flLowestTimeDelta) <= 0.0001f)
-					{
-						if (bSplash && flDist < flLowestDist - 0.001f)
-							bBetter = true;
-						else if (!bSplash || fabsf(flDist - flLowestDist) <= 0.001f)
-						{
-							if (flFlightTime < flLowestFlightTime - 0.0001f)
-								bBetter = true;
-						}
-					}
+					Solution_t tSolution;
+					CalculateAngle(m_tInfo.m_vLocalEye, vOriginalPoint, std::numeric_limits<int>::max(), tSolution, true, iPitch);
+					vPoint.m_tSolution.m_flPitch = tSolution.m_flPitch, vPoint.m_tSolution.m_flYaw = tSolution.m_flYaw;
 				}
 
-				if (bBetter)
+				Vec3 vAngles; Aim(G::CurrentUserCmd->viewangles, { vPoint.m_tSolution.m_flPitch, vPoint.m_tSolution.m_flYaw, 0.f }, vAngles);
+				std::vector<Vec3> vProjLines; bool bHitSolid = false;
+
+				if (TestAngle(pLocal, pWeapon, tTarget, vPoint.m_vPoint, vAngles, i, bSplash, &bHitSolid, &vProjLines))
 				{
 					iLowestPriority = iPriority; flLowestDist = flDist;
-					flLowestTimeDelta = flTimeDelta; flLowestFlightTime = flFlightTime;
 					vAngleTo = vAngles, vPredicted = tTarget.m_vPos, vTarget = vOriginalPoint;
 					m_flTimeTo = vPoint.m_tSolution.m_flTime + m_tInfo.m_flLatency;
 					m_vPlayerPath = tStorage.m_vPath;
 					m_vPlayerPath.push_back(tStorage.m_MoveData.m_vecAbsOrigin);
 					m_vProjectilePath = vProjLines;
-				}
-			}
-			else switch (Vars::Aimbot::General::AimType.Value)
-			{
-			case Vars::Aimbot::General::AimTypeEnum::Smooth:
-				if (Vars::Aimbot::General::AssistStrength.Value == 100.f)
+					if (bHitSolid) bHitSolidAny = true;
 					break;
-				[[fallthrough]];
-			case Vars::Aimbot::General::AimTypeEnum::Assistive:
-			{
-				bPriority = iPriority <= iLowestSmoothPriority;
-				bDist = true;
-
-				if (!bPriority || !bDist)
-					continue;
-
-				Vec3 vPlainAngles; Aim({}, { vPoint.m_tSolution.m_flPitch, vPoint.m_tSolution.m_flYaw, 0.f }, vPlainAngles, Vars::Aimbot::General::AimTypeEnum::Plain);
-				if (TestAngle(pLocal, pWeapon, tTarget, vPoint.m_vPoint, vPlainAngles, i, bSplash, &bHitSolid))
-				{
-					bool bBetter = false;
-					if (iPriority < iLowestSmoothPriority)
-						bBetter = true;
-					else if (iPriority == iLowestSmoothPriority)
-					{
-						if (flTimeDelta < flLowestSmoothTimeDelta - 0.0001f)
-							bBetter = true;
-						else if (fabsf(flTimeDelta - flLowestSmoothTimeDelta) <= 0.0001f)
-						{
-							if (bSplash && flDist < flLowestSmoothDist - 0.001f)
-								bBetter = true;
-							else if (!bSplash || fabsf(flDist - flLowestSmoothDist) <= 0.001f)
-							{
-								if (flFlightTime < flLowestSmoothFlightTime - 0.0001f)
-									bBetter = true;
-							}
-						}
-					}
-
-					if (!bBetter)
-						break;
-					iLowestSmoothPriority = iPriority; flLowestSmoothDist = flDist;
-					flLowestSmoothTimeDelta = flTimeDelta; flLowestSmoothFlightTime = flFlightTime;
-					vAngleTo = vAngles, vPredicted = tTarget.m_vPos;
-					m_vPlayerPath = tStorage.m_vPath;
-					m_vPlayerPath.push_back(tStorage.m_MoveData.m_vecAbsOrigin);
-					iReturn = 2;
 				}
+				else switch (Vars::Aimbot::General::AimType.Value)
+				{
+				case Vars::Aimbot::General::AimTypeEnum::Smooth:
+					if (Vars::Aimbot::General::AssistStrength.Value == 100.f)
+						break;
+					[[fallthrough]];
+				case Vars::Aimbot::General::AimTypeEnum::Assistive:
+				{
+					bPriority = bSplash ? iPriority <= iLowestSmoothPriority : iPriority < flLowestSmoothDist;
+					bDist = !bSplash || flDist < flLowestDist;
+					if (!bPriority || !bDist)
+						continue;
+
+					Vec3 vPlainAngles; Aim({}, { vPoint.m_tSolution.m_flPitch, vPoint.m_tSolution.m_flYaw, 0.f }, vPlainAngles, Vars::Aimbot::General::AimTypeEnum::Plain);
+					if (TestAngle(pLocal, pWeapon, tTarget, vPoint.m_vPoint, vPlainAngles, i, bSplash, &bHitSolid))
+					{
+						iLowestSmoothPriority = iPriority; flLowestSmoothDist = flDist;
+						vAngleTo = vAngles, vPredicted = tTarget.m_vPos;
+						m_vPlayerPath = tStorage.m_vPath;
+						m_vPlayerPath.push_back(tStorage.m_MoveData.m_vecAbsOrigin);
+						iReturn = 2;
+					}
+				}
+				}
+				if (bHitSolid) bHitSolidAny = true;
 			}
-			}
-			if (!j && bHitSolid)
+			
+			if (bCalculatedAny && !bSplash)
+				mDirectPoints.erase(iIndex);
+
+			if (!j && bHitSolidAny)
 				m_flTimeTo = vPoint.m_tSolution.m_flTime + m_tInfo.m_flLatency;
 			j++;
 		}
@@ -2076,11 +2133,7 @@ bool CAimbotProjectile::TestAngle(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CBa
 
 		Vec3 vPos = vPoint;
 		if (m_tInfo.m_flGravity)
-		{
-			const float flTime = TICKS_TO_TIME(iSimTime);
-			const float flTimeSq = flTime * flTime;
-			vPos += Vec3(0, 0, (m_tInfo.m_flGravity * 800.f * flTimeSq) / 2);
-		}
+			vPos += Vec3(0, 0, (m_tInfo.m_flGravity * 800.f * pow(TICKS_TO_TIME(iSimTime), 2)) / 2);
 		Vec3 vForward = (vPos - tProjInfo.m_vPos).Normalized();
 		tProjInfo.m_vAng = Math::VectorAngles(vForward);
 
@@ -2141,8 +2194,6 @@ bool CAimbotProjectile::TestAngle(CTFPlayer* pLocal, CTFWeaponBase* pWeapon, CBa
 			SDK::TraceHull(vStaticPos, vNew, tProjInfo.m_vHull * -1, tProjInfo.m_vHull, nMask, &filter, &trace);
 			vStaticPos = vNew;
 		}
-
-		F::ProjSim.ApplyTraceResult(trace);
 		if (trace.DidHit())
 		{
 			bool bTime = bSplash
@@ -2228,7 +2279,6 @@ bool CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBa
 			Vec3 vNew = F::ProjSim.GetOrigin();
 
 			SDK::TraceHull(vOld, vNew, tProjInfo.m_vHull * -1, tProjInfo.m_vHull, MASK_SOLID, &filter, &trace);
-			F::ProjSim.ApplyTraceResult(trace);
 			tProjInfo.m_vPos = trace.endpos;
 		}
 		m_tInfo.m_vLocalEye = tProjInfo.m_vPos; // just assume from the projectile without any offset, check validity later
@@ -2258,9 +2308,6 @@ bool CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBa
 
 	Vec3 vAngleTo, vPredicted, vTarget;
 	int iLowestPriority = std::numeric_limits<int>::max(); float flLowestDist = std::numeric_limits<float>::max();
-	std::vector<Point_t> vSplashPoints;
-	std::vector<std::tuple<Point_t, int, int>> vPoints;
-	vPoints.reserve(6);
 	for (int i = -TIME_TO_TICKS(m_tInfo.m_flLatency); i <= iMaxTime; i++)
 	{
 		if (!tStorage.m_bFailed)
@@ -2268,13 +2315,11 @@ bool CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBa
 			F::MoveSim.RunTick(tStorage);
 			tTarget.m_vPos = GetSimulatedPos(tStorage);
 		}
-		else if (tTarget.m_iTargetType == TargetEnum::Player)
-			break;
 		if (i < 0)
 			continue;
 
 		bool bDirectBreaks = true;
-		vSplashPoints.clear();
+		std::vector<Point_t> vSplashPoints = {};
 		if (iSplash)
 		{
 			Solution_t solution; CalculateAngle(m_tInfo.m_vLocalEye, tTarget.m_vPos, i, solution, false);
@@ -2294,7 +2339,7 @@ bool CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBa
 						else
 						{
 							iSplash = Vars::Aimbot::Projectile::SplashPredictionEnum::Off;
-							goto skipSplash2;
+							goto skipSplash;
 						}
 					}
 
@@ -2311,12 +2356,11 @@ bool CAimbotProjectile::CanHit(Target_t& tTarget, CTFPlayer* pLocal, CTFWeaponBa
 				}
 			}
 		}
-		skipSplash2:
+		skipSplash:
 		if (bDirectBreaks && mDirectPoints.empty())
 			break;
 
-		vPoints.clear();
-		vPoints.reserve(mDirectPoints.size() + vSplashPoints.size());
+		std::vector<std::tuple<Point_t, int, int>> vPoints = {};
 		for (auto& [iIndex, vPoint] : mDirectPoints)
 			vPoints.emplace_back(Point_t(tTarget.m_vPos + vPoint, {}), iIndex + (iSplash == Vars::Aimbot::Projectile::SplashPredictionEnum::Prefer ? m_tInfo.m_iSplashCount : 0), iIndex);
 		for (auto& vPoint : vSplashPoints)
