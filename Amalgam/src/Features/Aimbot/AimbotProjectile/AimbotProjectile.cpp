@@ -11,7 +11,14 @@
 
 static inline Vec3 GetSimulatedPos(const MoveStorage& tStorage)
 {
-	return tStorage.m_MoveData.m_vecAbsOrigin;
+	const Vec3 vSim = tStorage.m_MoveData.m_vecAbsOrigin;
+	if (tStorage.m_flPredictedDelta <= 0.f)
+		return vSim;
+
+	const float flIntervalStart = tStorage.m_flPredictedSimTime - tStorage.m_flPredictedDelta;
+	const float flProgress = (tStorage.m_flSimTime - flIntervalStart) / tStorage.m_flPredictedDelta;
+	const float t = std::clamp(flProgress, 0.f, 1.f);
+	return tStorage.m_vPredictedOrigin.Lerp(vSim, t);
 }
 
 //#define SPLASH_DEBUG1 // normal splash visualization
