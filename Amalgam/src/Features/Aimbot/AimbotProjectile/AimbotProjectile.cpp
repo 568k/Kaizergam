@@ -1079,7 +1079,7 @@ static inline Vec3 PullPoint(Vec3 vPoint, Vec3 vLocalPos, Info_t& tInfo, Vec3 vM
 
 
 
-static inline void SolveProjectileSpeed(CTFWeaponBase* pWeapon, const Vec3& vLocalPos, const Vec3& vTargetPos, float& flVelocity, float& flDragTime, const float flGravity)
+static inline void SolveProjectileSpeed(CTFWeaponBase* pWeapon, const Vec3& vLocalPos, const Vec3& vTargetPos, float& flVelocity, float& flDragTime, const float flGravity, int iPitchPreference = 0)
 {
 	if (!F::ProjSim.m_pObj->IsDragEnabled() || F::ProjSim.m_pObj->m_dragBasis.IsZero())
 		return;
@@ -1095,7 +1095,11 @@ static inline void SolveProjectileSpeed(CTFWeaponBase* pWeapon, const Vec3& vLoc
 	if (flRoot < 0.f)
 		return;
 
-	const float flPitch = atan((flVel2 - sqrt(flRoot)) / (flGrav * flDist));
+	float flPitch;
+	if (iPitchPreference == 2)
+		flPitch = atan((flVel2 + sqrt(flRoot)) / (flGrav * flDist)); // high arc
+	else
+		flPitch = atan((flVel2 - sqrt(flRoot)) / (flGrav * flDist)); // low arc
 	const float flTime = flDist / (cos(flPitch) * flVelocity);
 
 	float flDrag = 0.f;
@@ -1154,7 +1158,7 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 		{
 			Vec3 vForward, vRight, vUp; Math::AngleVectors(Math::CalcAngle(vLocalPos, vTargetPos), &vForward, &vRight, &vUp);
 			Vec3 vShootPos = vLocalPos + (vForward * m_tInfo.m_vOffset.x) + (vRight * m_tInfo.m_vOffset.y) + (vUp * m_tInfo.m_vOffset.z);
-			SolveProjectileSpeed(m_tInfo.m_pWeapon, vShootPos, vTargetPos, flVelocity, flDragTime, m_tInfo.m_flGravity);
+			SolveProjectileSpeed(m_tInfo.m_pWeapon, vShootPos, vTargetPos, flVelocity, flDragTime, m_tInfo.m_flGravity, iPitchPreference);
 		}
 
 		Vec3 vDelta = vTargetPos - vLocalPos;
@@ -1234,7 +1238,7 @@ void CAimbotProjectile::CalculateAngle(const Vec3& vLocalPos, const Vec3& vTarge
 
 	{	// calculate trajectory from projectile origin
 		float flVelocity = m_tInfo.m_flVelocity, flDragTime = 0.f;
-		SolveProjectileSpeed(m_tInfo.m_pWeapon, tProjInfo.m_vPos, vTargetPos, flVelocity, flDragTime, m_tInfo.m_flGravity);
+		SolveProjectileSpeed(m_tInfo.m_pWeapon, tProjInfo.m_vPos, vTargetPos, flVelocity, flDragTime, m_tInfo.m_flGravity, iPitchPreference);
 
 		Vec3 vDelta = vTargetPos - tProjInfo.m_vPos;
 		float flDist = vDelta.Length2D();
