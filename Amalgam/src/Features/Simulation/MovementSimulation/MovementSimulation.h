@@ -55,6 +55,8 @@ private:
 
 	bool m_bOldInPrediction = false;
 	bool m_bOldFirstTimePredicted = false;
+	int m_nOldTickCount = 0;
+	float m_flOldCurtime = 0.f;
 	float m_flOldFrametime = 0.f;
 
 	std::unordered_map<int, std::deque<MoveData>> m_mRecords = {};
